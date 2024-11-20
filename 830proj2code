@@ -1,0 +1,169 @@
+//MEC830 Project 2 code
+
+#include <AccelStepper.h>
+#include <LiquidCrystal.h>
+
+#define ENC_A 5
+#define ENC_B 3
+#define ST_PULSE 6
+#define ST_DIRECTION 7
+
+#define PID_TOGGLE 2
+#define PP_TOGGLE 0
+#define ON_SWITCH 4
+
+LiquidCrystal lcd(13, 12, 11, 10, 9, 8);
+
+int System_Enabled;
+int PID_Enabled = 0;
+int PP_Enabled = 0;
+int failed = 0;
+
+double Kp = 0.2;
+double Ki = 0;
+double Kd = 0;
+double prev_error = 0;
+double acc_error = 0;
+double der_error = 0;
+double PID_Response = 0;
+double PID_gain = 1;
+
+double K1 = 0;
+double K2 = 0;
+double K3 = 1;
+double K4 = 0;
+double PP_Response = 0;
+
+int prev_A = 0;
+int prev_B = 0;
+int checker = 0;
+int enc_counter = 0;
+int enc_dz = 2;
+
+//int pulse_length = 0;
+//int prev_pulse_time = 0;
+float step_speed = 8000;
+float step_accel = 20000;
+float step_goto = 500;
+int step_pos = 0;
+int last_step_pos = 0;
+
+int beg_time = 0;
+int time_counter = 0;
+double time_interval = 0.01;
+
+int serial_counter = 0;
+
+AccelStepper stepper1(1, 6, 7);
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(ENC_A, INPUT_PULLUP);
+  pinMode(ENC_B, INPUT_PULLUP);
+
+  stepper1.setMaxSpeed(step_speed);
+  stepper1.setAcceleration(step_accel);
+
+  pinMode(PID_TOGGLE, INPUT_PULLUP);
+  pinMode(PP_TOGGLE, INPUT_PULLUP);
+  pinMode(ON_SWITCH, INPUT_PULLUP);
+  
+  //Declares an interrupt that will occur whenever encoder pin B changes
+  attachInterrupt(digitalPinToInterrupt(ENC_B), read_encB, CHANGE);
+
+  lcd.begin(16, 2);
+  lcd.clear();
+  lcd.print("NO CONT.");
+
+}
+
+void read_encB(){
+  //Determine direction by checking state of encoder pin A
+  if (digitalRead(ENC_B) == HIGH && digitalRead(ENC_A) == HIGH){
+    enc_counter++;
+  }
+  else if (digitalRead(ENC_B) == HIGH && digitalRead(ENC_A) == LOW){
+    enc_counter--;
+  }
+}
+
+void loop() {
+  beg_time = millis(); //Must occur at the beginning
+  serial_counter++;
+
+  //Check buttons
+  if (digitalRead(PID_TOGGLE) == LOW){
+    PID_Enabled = 1;
+    PP_Enabled = 0;
+    lcd.clear();
+    lcd.print("PID CONTROL");
+  }
+  if (digitalRead(PP_TOGGLE) == LOW){
+    PID_Enabled = 0;
+    PP_Enabled = 1;
+    lcd.clear();
+    lcd.print("PP CONTROL");
+  }
+  if (digitalRead(ON_SWITCH) == HIGH){
+    PID_Enabled = 0;
+    PP_Enabled = 0;
+    lcd.clear();
+    lcd.print("NO CONTROLLER");
+  }
+
+  if (PP_Enabled){
+    //Generate PP response
+    float theta = enc_counter;
+    float theta_d = (enc_counter - prev_error)/time_interval;
+    float x = step_pos;
+    float x_d = (step_pos - last_step_pos)/time_interval;
+
+    PP_Response = K1*x + K2*x_d + K3*theta + K4*theta_d;
+  }
+
+  //Generate PID response
+  int error = enc_counter;
+  error = error * abs(error); //Increases sensitivity to higher values
+  acc_error += error*time_interval;
+  der_error = (error - prev_error)/time_interval;
+  PID_Response = Kp*error + Ki*acc_error + Kd*der_error;
+
+  if (error > 90){
+    failed = 1; //Disables system if the pendulum has fallen too far
+  }
+
+  //Set direction for stepper motor
+  if (PID_Response > 0){
+    digitalWrite(7, LOW);
+  }
+  else{
+    digitalWrite(7, HIGH);
+  }
+
+  //Transform PID response to use for stepper motor
+  PID_Response = constrain(PID_Response * PID_gain, -1000, 1000);
+
+  if (PID_Enabled == 1 && PID_Response != 0 && abs(enc_counter) > enc_dz && !failed){
+    last_step_pos = step_pos;
+    step_pos += PID_Response;
+    stepper1.moveTo(step_pos);
+    stepper1.runToPosition();
+  }
+  else if (PP_Enabled == 1 && abs(enc_counter) > enc_dz && !failed){
+    last_step_pos = step_pos;
+    step_pos += PP_Response;
+    stepper1.moveTo(step_pos);
+    stepper1.runToPosition();
+  }
+
+  prev_error = enc_counter;
+  //time_interval = (millis() - beg_time) / 1000; //Must occur at the end
+
+  if (serial_counter > 1000){
+    Serial.print(map(enc_counter, 0, 300, 0, 180));
+    Serial.print(",");
+    Serial.println(step_pos / 100);
+    serial_counter = 0;
+  }
+}
